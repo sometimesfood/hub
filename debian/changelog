@@ -1,3 +1,10 @@
+hub (1.6.0-1) lucid; urgency=low
+
+  * New upstream release (v1.6.0):
+    - `am` strips extra paths from pull request URLs
+
+ -- Sebastian Boehm <sebastian@sometimesfood.org>  Wed, 30 Mar 2011 00:17:26 +0200
+
 hub (1.5.1-1) lucid; urgency=low
 
   * New upstream release (v1.5.1):
