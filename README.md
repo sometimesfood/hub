@@ -30,7 +30,7 @@ Install
 
 `hub` is most easily installed as a standalone script:
 
-    curl http://chriswanstrath.com/hub/standalone -sLo ~/bin/hub &&
+    curl http://defunkt.io/hub/standalone -sLo ~/bin/hub &&
     chmod 755 ~/bin/hub
 
 Assuming `~/bin/` is in your `$PATH`, you're ready to roll:
@@ -51,18 +51,14 @@ Assuming `~/bin/` is in your `$PATH`, you're ready to roll:
 
 Though not recommended, `hub` can also be installed as a RubyGem:
 
-    $ gem install git-hub
-
-Yes, the gem name is "git-hub".
+    $ gem install hub
 
 (It's not recommended for casual use because of the RubyGems startup
 time. See [this gist][speed] for information.)
 
 ### Standalone via RubyGems
 
-Yes, the gem name is still "git-hub":
-
-    $ gem install git-hub
+    $ gem install hub
     $ hub hub standalone > ~/bin/hub && chmod 755 ~/bin/hub
 
 This installs a standalone version which doesn't require RubyGems to
@@ -75,6 +71,21 @@ You can also install from source:
     $ git clone git://github.com/defunkt/hub.git
     $ cd hub
     $ rake install prefix=/usr/local
+
+### Help! It's Slow!
+
+Is your prompt slow? It may be hub.
+
+1. Check that it's **not** installed using RubyGems.
+2. Check that RUBYOPT isn't loading anything shady:
+
+       $ echo $RUBYOPT
+
+3. Check that your system Ruby is speedy:
+
+       $ time /usr/bin/env ruby -e0
+
+If #3 is slow, it may be your [GC settings][gc].
 
 
 Aliasing
@@ -191,10 +202,10 @@ Creates a new public github repository and adds the remote `origin` at
 ### git browse
 
     $ git browse
-    > open https://github.com/CURRENT_REPO
+    > open https://github.com/YOUR_USER/CURRENT_REPO
 
     $ git browse -- issues
-    > open https://github.com/CURRENT_REPO/issues
+    > open https://github.com/YOUR_USER/CURRENT_REPO/issues
 
     $ git browse schacon/ticgit
     > open https://github.com/schacon/ticgit
@@ -325,7 +336,7 @@ Meta
 * Bugs: <http://github.com/defunkt/hub/issues>
 * List: <http://groups.google.com/group/github>
 * Test: <http://runcoderun.com/defunkt/hub>
-* Gems: <http://gemcutter.org/gems/git-hub>
+* Gems: <http://gemcutter.org/gems/hub>
 
 
 Authors
@@ -337,3 +348,4 @@ Authors
 [1]: http://github.com/defunkt/hub/issues
 [speed]: http://gist.github.com/284823
 [2]: http://github.com/guides/local-github-config
+[gc]: https://twitter.com/brynary/status/49560668994674688
