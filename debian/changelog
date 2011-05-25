@@ -1,3 +1,14 @@
+hub (1.6.1-1) lucid; urgency=low
+
+  * Update homepage in debian/control
+  * New upstream release (v1.6.1):
+    - `git push remote1,remote2` without branch name pushes the current branch
+    - Fix `browse` command for current repo with no tracking setup
+    - Preserve global flags to git
+    - Add cross-platform command detection and browser launcher
+
+ -- Sebastian Boehm <sebastian@sometimesfood.org>  Wed, 25 May 2011 18:52:17 +0200
+
 hub (1.6.0-1) lucid; urgency=low
 
   * New upstream release (v1.6.0):
