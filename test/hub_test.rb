@@ -1,6 +1,7 @@
 $LOAD_PATH.unshift File.dirname(__FILE__)
 require 'helper'
 require 'webmock/test_unit'
+require 'rbconfig'
 
 WebMock::BodyPattern.class_eval do
   undef normalize_hash
@@ -17,10 +18,10 @@ class HubTest < Test::Unit::TestCase
 
   COMMANDS = []
 
-  Hub::Commands.class_eval do
-    remove_method :command?
-    define_method :command? do |name|
-      COMMANDS.include?(name)
+  Hub::Context.class_eval do
+    remove_method :which
+    define_method :which do |name|
+      COMMANDS.include?(name) ? "/usr/bin/#{name}" : nil
     end
   end
 
@@ -28,6 +29,8 @@ class HubTest < Test::Unit::TestCase
     COMMANDS.replace %w[open groff]
     Hub::Context::DIRNAME.replace 'hub'
     Hub::Context::REMOTES.clear
+
+    Hub::Context::GIT_CONFIG.executable = 'git'
 
     @git = Hub::Context::GIT_CONFIG.replace(Hash.new { |h, k|
       unless k.index('config alias.') == 0
@@ -42,8 +45,6 @@ class HubTest < Test::Unit::TestCase
       'config --get-all remote.mislav.url' => 'git://github.com/mislav/hub.git',
       'config branch.master.remote'  => 'origin',
       'config branch.master.merge'   => 'refs/heads/master',
-      'config branch.feature.remote' => 'mislav',
-      'config branch.feature.merge'  => 'refs/heads/experimental',
       'config --bool hub.http-clone' => 'false',
       'config core.repositoryformatversion' => '0'
     )
@@ -89,7 +90,7 @@ class HubTest < Test::Unit::TestCase
       stub_github_user(nil)
     end
 
-    assert_equal "** No GitHub user set. See http://github.com/guides/local-github-config\n", out
+    assert_equal "** No GitHub user set. See http://help.github.com/git-email-settings/\n", out
   end
 
   def test_your_public_clone_fails_without_config
@@ -97,7 +98,7 @@ class HubTest < Test::Unit::TestCase
       stub_github_user(nil)
     end
 
-    assert_equal "** No GitHub user set. See http://github.com/guides/local-github-config\n", out
+    assert_equal "** No GitHub user set. See http://help.github.com/git-email-settings/\n", out
   end
 
   def test_private_clone_left_alone
@@ -395,12 +396,22 @@ class HubTest < Test::Unit::TestCase
       stub_github_user(nil)
     end
 
-    assert_equal "** No GitHub user set. See http://github.com/guides/local-github-config\n", out
+    assert_equal "** No GitHub user set. See http://help.github.com/git-email-settings/\n", out
+  end
+
+  def test_push_untouched
+    assert_forwarded "push"
   end
 
   def test_push_two
     assert_commands "git push origin cool-feature", "git push staging cool-feature",
                     "push origin,staging cool-feature"
+  end
+
+  def test_push_current_branch
+    stub_branch('refs/heads/cool-feature')
+    assert_commands "git push origin cool-feature", "git push staging cool-feature",
+                    "push origin,staging"
   end
 
   def test_push_more
@@ -491,7 +502,7 @@ class HubTest < Test::Unit::TestCase
     out = hub("create") do
       stub_github_token(nil)
     end
-    assert_equal "** No GitHub token set. See http://github.com/guides/local-github-config\n", out
+    assert_equal "** No GitHub token set. See http://help.github.com/git-email-settings/\n", out
   end
 
   def test_create_outside_git_repo
@@ -556,7 +567,7 @@ class HubTest < Test::Unit::TestCase
 
   def test_exec_path_arg
     out = hub('--exec-path=/home/wombat/share/my-l33t-git-core')
-    assert_equal Hub::Commands.improved_help_text, hub("")
+    assert_equal Hub::Commands.improved_help_text, out
   end
 
   def test_html_path
@@ -612,6 +623,7 @@ config
 
   def test_hub_compare_tracking_branch
     stub_branch('refs/heads/feature')
+    stub_tracking('feature', 'mislav', 'refs/heads/experimental')
 
     assert_command "compare",
       "open https://github.com/mislav/hub/compare/experimental"
@@ -666,6 +678,7 @@ config
 
   def test_hub_browse_on_branch
     stub_branch('refs/heads/feature')
+    stub_tracking('feature', 'mislav', 'refs/heads/experimental')
 
     assert_command "browse resque", "open https://github.com/tpw/resque"
     assert_command "browse resque commits",
@@ -682,6 +695,17 @@ config
   def test_hub_browse_current
     assert_command "browse", "open https://github.com/defunkt/hub"
     assert_command "browse --", "open https://github.com/defunkt/hub"
+  end
+
+  def test_hub_browse_no_tracking
+    stub_tracking_nothing
+    assert_command "browse", "open https://github.com/defunkt/hub"
+  end
+
+  def test_hub_browse_no_tracking_on_branch
+    stub_branch('refs/heads/feature')
+    stub_tracking('feature', nil, nil)
+    assert_command "browse", "open https://github.com/defunkt/hub"
   end
 
   def test_hub_browse_current_wiki
@@ -720,7 +744,7 @@ config
   def test_linux_browser
     stub_available_commands "open", "xdg-open", "cygstart"
     with_browser_env(nil) do
-      with_ruby_platform("i686-linux") do
+      with_host_os("i686-linux") do
         assert_browser("xdg-open")
       end
     end
@@ -729,7 +753,7 @@ config
   def test_cygwin_browser
     stub_available_commands "open", "cygstart"
     with_browser_env(nil) do
-      with_ruby_platform("i686-linux") do
+      with_host_os("i686-linux") do
         assert_browser("cygstart")
       end
     end
@@ -739,7 +763,7 @@ config
     stub_available_commands()
     expected = "Please set $BROWSER to a web launcher to use this command.\n"
     with_browser_env(nil) do
-      with_ruby_platform("i686-linux") do
+      with_host_os("i686-linux") do
         assert_equal expected, hub("browse")
       end
     end
@@ -757,6 +781,12 @@ config
   def test_multiple_remote_urls
     stub_repo_url("git://example.com/other.git\ngit://github.com/my/repo.git")
     assert_command "browse", "open https://github.com/my/repo"
+  end
+
+  def test_global_flags_preserved
+    cmd = '--no-pager --bare -c core.awesome=true -c name=value --git-dir=/srv/www perform'
+    assert_command cmd, 'git --bare -c core.awesome=true -c name=value --git-dir=/srv/www --no-pager perform'
+    assert_equal %w[git --bare -c core.awesome=true -c name=value --git-dir=/srv/www], @git.executable
   end
 
   protected
@@ -778,9 +808,13 @@ config
       @git['symbolic-ref -q HEAD'] = value
     end
 
+    def stub_tracking(from, remote_name, remote_branch)
+      @git["config branch.#{from}.remote"] = remote_name
+      @git["config branch.#{from}.merge"] = remote_branch
+    end
+
     def stub_tracking_nothing
-      @git['config branch.master.remote'] = nil
-      @git['config branch.master.merge'] = nil
+      stub_tracking('master', nil, nil)
     end
 
     def stub_remotes_group(name, value)
@@ -834,14 +868,14 @@ config
       assert_command "browse", "#{browser} https://github.com/defunkt/hub"
     end
 
-    def with_ruby_platform(value)
-      platform = RUBY_PLATFORM
-      Object.send(:remove_const, :RUBY_PLATFORM)
-      Object.const_set(:RUBY_PLATFORM, value)
-      yield
-    ensure
-      Object.send(:remove_const, :RUBY_PLATFORM)
-      Object.const_set(:RUBY_PLATFORM, platform)
+    def with_host_os(value)
+      host_os = RbConfig::CONFIG['host_os']
+      RbConfig::CONFIG['host_os'] = value
+      begin
+        yield
+      ensure
+        RbConfig::CONFIG['host_os'] = host_os
+      end
     end
 
 end

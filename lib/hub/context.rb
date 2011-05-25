@@ -1,12 +1,30 @@
+require 'shellwords'
+
 module Hub
   # Provides methods for inspecting the environment, such as GitHub user/token
   # settings, repository info, and similar.
   module Context
     private
 
+    class ShellOutCache < Hash
+      attr_accessor :executable
+
+      def initialize(executable = nil, &block)
+        super(&block)
+        @executable = executable
+      end
+
+      def to_exec(args)
+        args = Shellwords.shellwords(args) if args.respond_to? :to_str
+        Array(executable) + Array(args)
+      end
+    end
+
     # Caches output when shelling out to git
-    GIT_CONFIG = Hash.new do |cache, cmd|
-      result = %x{git #{cmd}}.chomp
+    GIT_CONFIG = ShellOutCache.new(ENV['GIT'] || 'git') do |cache, cmd|
+      full_cmd = cache.to_exec(cmd)
+      cmd_string = full_cmd.respond_to?(:shelljoin) ? full_cmd.shelljoin : full_cmd.join(' ')
+      result = %x{#{cmd_string}}.chomp
       cache[cmd] = $?.success? && !result.empty? ? result : nil
     end
 
@@ -25,7 +43,7 @@ module Hub
       end
     end
 
-    LGHCONF = "http://github.com/guides/local-github-config"
+    LGHCONF = "http://help.github.com/git-email-settings/"
 
     def repo_owner
       REMOTES[default_remote][:user]
@@ -78,12 +96,7 @@ module Hub
 
     def current_remote
       return if remotes.empty?
-
-      if current_branch
-        remote_for(current_branch)
-      else
-        default_remote
-      end
+      (current_branch && remote_for(current_branch)) || default_remote
     end
 
     def default_remote
@@ -154,6 +167,43 @@ module Hub
 
     def current_dirname
       DIRNAME
+    end
+
+    # Cross-platform web browser command; respects the value set in $BROWSER.
+    # 
+    # Returns an array, e.g.: ['open']
+    def browser_launcher
+      require 'rbconfig'
+      browser = ENV['BROWSER'] ||
+        (RbConfig::CONFIG['host_os'].include?('darwin') && 'open') ||
+        (RbConfig::CONFIG['host_os'] =~ /msdos|mswin|djgpp|mingw|windows/ && 'start') ||
+        %w[xdg-open cygstart x-www-browser firefox opera mozilla netscape].find { |comm| which comm }
+
+      abort "Please set $BROWSER to a web launcher to use this command." unless browser
+      Array(browser)
+    end
+
+    # Cross-platform way of finding an executable in the $PATH.
+    #
+    #   which('ruby') #=> /usr/bin/ruby
+    def which(cmd)
+      exts = ENV['PATHEXT'] ? ENV['PATHEXT'].split(';') : ['']
+      ENV['PATH'].split(File::PATH_SEPARATOR).each do |path|
+        exts.each { |ext|
+          exe = "#{path}/#{cmd}#{ext}"
+          return exe if File.executable? exe
+        }
+      end
+      return nil
+    end
+
+    # Checks whether a command exists on this system in the $PATH.
+    #
+    # name - The String name of the command to check for.
+    #
+    # Returns a Boolean.
+    def command?(name)
+      !which(name).nil?
     end
   end
 end
