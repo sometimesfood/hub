@@ -11,7 +11,7 @@ Vcs-Browser: https://github.com/sometimesfood/hub
 Package: hub
 Architecture: all
 Depends: ${misc:Depends}, ruby, git-core
-Description: a command line utility which adds GitHub knowledge to git
+Description: command line utility which adds GitHub knowledge to git
  Hub enhances various Git commands with GitHub remote expansion.
  .
  It provides commands to make forking, fetching, browsing
