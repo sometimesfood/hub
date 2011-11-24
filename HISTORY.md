@@ -1,3 +1,18 @@
+## master
+
+* lock down standalone script to system ruby
+* don't try to use command output pager on Windows
+* opt in for HTTPS: `git config hub.protocol https`
+* add `hub pull-request`
+* improve detecting upstream configuration ("tracking" branches)
+* introduce `hub --noop`
+* `hub apply` now downloads GitHub patches same as `hub am`
+* `hub create <name>` to explicitly name a repository
+* switch API communication to HTTPS
+* better handling of API HTTP exceptions
+* replace two dots (`sha1..sha2`) with three for ranges in `compare`
+* avoid ugly error & stack trace when git is not found on the system
+
 ## 1.6.1 (2011-05-13)
 
 * `git push remote1,remote2` without branch name pushes the current branch

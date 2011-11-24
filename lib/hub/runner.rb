@@ -31,7 +31,7 @@ module Hub
       args.commands.map do |cmd|
         if cmd.respond_to?(:join)
           # a simplified `Shellwords.join` but it's OK since this is only used to inspect
-          cmd.map { |c| (c.index(' ') || c.empty?) ? "'#{c}'" : c }.join(' ')
+          cmd.map { |arg| arg = arg.to_s; (arg.index(' ') || arg.empty?) ? "'#{arg}'" : arg }.join(' ')
         else
           cmd.to_s
         end
@@ -45,7 +45,9 @@ module Hub
     # allows commands to print an error message and cancel their own
     # execution if they don't make sense.
     def execute
-      unless args.skip?
+      if args.noop?
+        puts commands
+      elsif not args.skip?
         if args.chained?
           execute_command_chain
         else

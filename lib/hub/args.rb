@@ -12,7 +12,7 @@ module Hub
       super
       @executable = ENV["GIT"] || "git"
       @after = nil
-      @skip = false
+      @skip = @noop = false
       @original_args = args.first
       @chain = [nil]
     end
@@ -43,18 +43,31 @@ module Hub
 
     # Skip running this command.
     def skip!
-      @skip ||= true
+      @skip = true
     end
-    
+
     # Boolean indicating whether this command will run.
     def skip?
       @skip
+    end
+
+    # Mark that this command shouldn't really run.
+    def noop!
+      @noop = true
+    end
+
+    def noop?
+      @noop
     end
 
     # Array of `executable` followed by all args suitable as arguments
     # for `exec` or `system` calls.
     def to_exec(args = self)
       Array(executable) + args
+    end
+
+    def add_exec_flags(flags)
+      self.executable = Array(executable).concat(flags)
     end
 
     # All the words (as opposed to flags) contained in this argument
