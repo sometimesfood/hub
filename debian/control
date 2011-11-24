@@ -3,7 +3,7 @@ Section: devel
 Priority: optional
 Maintainer: Sebastian Boehm <sebastian@sometimesfood.org>
 Build-Depends: debhelper (>= 7), rake
-Standards-Version: 3.8.4
+Standards-Version: 3.9.1
 Homepage: http://defunkt.io/hub/
 Vcs-git: git://github.com/sometimesfood/hub.git
 Vcs-Browser: https://github.com/sometimesfood/hub
