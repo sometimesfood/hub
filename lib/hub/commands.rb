@@ -34,13 +34,9 @@ module Hub
     # provides git interrogation methods
     extend Context
 
-    API_REPO        = 'http://github.com/api/v2/yaml/repos/show/%s/%s'
-    API_FORK        = 'https://github.com/api/v2/yaml/repos/fork/%s/%s'
-    API_CREATE      = 'https://github.com/api/v2/yaml/repos/create'
-    API_PULL        = 'http://github.com/api/v2/json/pulls/%s'
-    API_PULLREQUEST = 'https://github.com/api/v2/yaml/pulls/%s/%s'
-
-    NAME_WITH_OWNER_RE = /^([\w-]+)(?:\/([\w-]+))?$/
+    NAME_RE = /[\w.-]+/
+    OWNER_RE = /[a-zA-Z0-9-]+/
+    NAME_WITH_OWNER_RE = /^(?:#{NAME_RE}|#{OWNER_RE}\/#{NAME_RE})$/
 
     def run(args)
       slurp_global_flags(args)
@@ -97,11 +93,11 @@ module Hub
           head_project, options[:head] = from_github_ref.call(head, head_project)
         when '-i'
           options[:issue] = args.shift
-        when %r{^https?://github.com/([^/]+/[^/]+)/issues/(\d+)}
-          options[:issue] = $2
-          base_project = github_project($1)
         else
-          if !options[:title] then options[:title] = arg
+          if url = resolve_github_url(arg) and url.project_path =~ /^issues\/(\d+)/
+            options[:issue] = $1
+            base_project = url.project
+          elsif !options[:title] then options[:title] = arg
           else
             abort "invalid argument: #{arg}"
           end
@@ -120,8 +116,10 @@ module Hub
       end
       options[:head] ||= (tracked_branch || current_branch).short_name
 
-      if head_project.owner != github_user and !tracked_branch and !explicit_owner
-        head_project = github_project(head_project.name, github_user)
+      # when no tracking, assume remote branch is published under active user's fork
+      user = github_user(true, head_project.host)
+      if head_project.owner != user and !tracked_branch and !explicit_owner
+        head_project = head_project.owned_by(user)
       end
 
       remote_branch = "#{head_project.remote}/#{options[:head]}"
@@ -184,8 +182,12 @@ module Hub
           # $ hub clone rtomayko/tilt
           # $ hub clone tilt
           if arg =~ NAME_WITH_OWNER_RE
-            project = github_project(arg)
-            ssh ||= args[0] != 'submodule' && project.owner == github_user(false)
+            # FIXME: this logic shouldn't be duplicated here!
+            name, owner = arg, nil
+            owner, name = name.split('/', 2) if name.index('/')
+            host = ENV['GITHUB_HOST']
+            project = Context::GithubProject.new(nil, owner || github_user(true, host), name, host || 'github.com')
+            ssh ||= args[0] != 'submodule' && project.owner == github_user(false, host) || host
             args[idx] = project.git_url(:private => ssh, :https => https_protocol?)
           end
           break
@@ -229,11 +231,13 @@ module Hub
     # $ hub remote add origin
     # > git remote add origin git://github.com/YOUR_LOGIN/THIS_REPO.git
     def remote(args)
-      if %w[add set-url].include?(args[1]) && args.last =~ NAME_WITH_OWNER_RE
-        user, repo = $1, $2 || repo_name
-      else
-        return # do not touch arguments
+      if %w[add set-url].include?(args[1])
+        name = args.last
+        if name =~ /^(#{OWNER_RE})$/ || name =~ /^(#{OWNER_RE})\/(#{NAME_RE})$/
+          user, repo = $1, $2 || repo_name
+        end
       end
+      return unless user # do not touch arguments
 
       ssh = args.delete('-p')
 
@@ -283,14 +287,16 @@ module Hub
         names = []
       end
 
-      names.reject! { |name|
-        name =~ /\W/ or remotes.include?(name) or
-          remotes_group(name) or not repo_exists?(name)
-      }
+      projects = names.map { |name|
+        unless name =~ /\W/ or remotes.include?(name) or remotes_group(name)
+          project = github_project(nil, name)
+          project if repo_exists?(project)
+        end
+      }.compact
 
-      if names.any?
-        names.each do |name|
-          args.before ['remote', 'add', name, git_url(name)]
+      if projects.any?
+        projects.each do |project|
+          args.before ['remote', 'add', project.owner, project.git_url(:https => https_protocol?)]
         end
       end
     end
@@ -299,20 +305,23 @@ module Hub
     # > git remote add -f -t feature git://github:com/mislav/hub.git
     # > git checkout -b mislav-feature mislav/feature
     def checkout(args)
-      if (2..3) === args.length and args[1] =~ %r{https?://github.com/(.+?)/(.+?)/pull/(\d+)}
-        owner, repo, pull_id = $1, $2, $3
+      if (2..3) === args.length and url = resolve_github_url(args[1]) and url.project_path =~ /^pull\/(\d+)/
+        pull_id = $1
 
         load_net_http
-        pull_body = Net::HTTP.get URI(API_PULL % File.join(owner, repo, pull_id))
+        response = http_request(url.project.api_pullrequest_url(pull_id, 'json'))
+        pull_data = JSON.parse(response.body)['pull']
 
-        user, branch = pull_body.match(/"label":\s*"(.+?)"/)[1].split(':', 2)
+        user, branch = pull_data['head']['label'].split(':', 2)
         new_branch_name = args[2] || "#{user}-#{branch}"
 
         if remotes.include? user
           args.before ['remote', 'set-branches', '--add', user, branch]
           args.before ['fetch', user, "+refs/heads/#{branch}:refs/remotes/#{user}/#{branch}"]
         else
-          args.before ['remote', 'add', '-f', '-t', branch, user, github_project(repo, user).git_url]
+          url = github_project(url.project_name, user).git_url(:private => pull_data['head']['repository']['private'],
+                                                               :https => https_protocol?)
+          args.before ['remote', 'add', '-f', '-t', branch, user, url]
         end
         args[1..-1] = ['-b', new_branch_name, "#{user}/#{branch}"]
       end
@@ -331,25 +340,22 @@ module Hub
     # > git cherry-pick SHA
     def cherry_pick(args)
       unless args.include?('-m') or args.include?('--mainline')
-        case ref = args.words.last
-        when %r{^(?:https?:)//github.com/(.+?)/(.+?)/commit/([a-f0-9]{7,40})}
-          user, repo, sha = $1, $2, $3
-          args[args.index(ref)] = sha
-        when /^(\w+)@([a-f0-9]{7,40})$/
-          user, repo, sha = $1, nil, $2
-          args[args.index(ref)] = sha
-        else
-          user = nil
+        ref = args.words.last
+        if url = resolve_github_url(ref) and url.project_path =~ /^commit\/([a-f0-9]{7,40})/
+          sha = $1
+          project = url.project
+        elsif ref =~ /^(#{OWNER_RE})@([a-f0-9]{7,40})$/
+          owner, sha = $1, $2
+          project = local_repo.main_project.owned_by(owner)
         end
 
-        if user
-          if user == repo_owner
-            # fetch from origin if the repo belongs to the user
-            args.before ['fetch', origin_remote]
-          elsif remotes.include?(user)
-            args.before ['fetch', user]
+        if project
+          args[args.index(ref)] = sha
+
+          if remote = project.remote and remotes.include? remote
+            args.before ['fetch', remote]
           else
-            args.before ['remote', 'add', '-f', user, git_url(user, repo)]
+            args.before ['remote', 'add', '-f', project.owner, project.git_url(:https => https_protocol?)]
           end
         end
       end
@@ -366,7 +372,7 @@ module Hub
         url = url.sub(%r{(/pull/\d+)/\w*$}, '\1') unless gist
         ext = gist ? '.txt' : '.patch'
         url += ext unless File.extname(url) == ext
-        patch_file = File.join(ENV['TMPDIR'], "#{gist ? 'gist-' : ''}#{File.basename(url)}")
+        patch_file = File.join(ENV['TMPDIR'] || '/tmp', "#{gist ? 'gist-' : ''}#{File.basename(url)}")
         args.before 'curl', ['-#LA', "hub #{Hub::Version}", url, '-o', patch_file]
         args[idx] = patch_file
       end
@@ -382,7 +388,11 @@ module Hub
     # > git remote add origin git@github.com:USER/REPO.git
     def init(args)
       if args.delete('-g')
-        url = git_url(github_user, repo_name, :private => true)
+        # can't use default_host because there is no local_repo yet
+        # FIXME: this shouldn't be here!
+        host = ENV['GITHUB_HOST']
+        project = Context::GithubProject.new(nil, github_user(true, host), File.basename(current_dir), host || 'github.com')
+        url = project.git_url(:private => true, :https => https_protocol?)
         args.after ['remote', 'add', 'origin', url]
       end
     end
@@ -391,21 +401,22 @@ module Hub
     # ... hardcore forking action ...
     # > git remote add -f YOUR_USER git@github.com:YOUR_USER/CURRENT_REPO.git
     def fork(args)
-      # can't do anything without token and original owner name
-      if github_user && github_token && repo_owner
-        if repo_exists?(github_user)
-          warn "#{github_user}/#{repo_name} already exists on GitHub"
-        else
-          fork_repo unless args.noop?
-        end
+      unless project = local_repo.main_project
+        abort "Error: repository under 'origin' remote is not a GitHub project"
+      end
+      forked_project = project.owned_by(github_user(true, project.host))
+      if repo_exists?(forked_project)
+        warn "#{forked_project.name_with_owner} already exists on #{forked_project.host}"
+      else
+        fork_repo(project) unless args.noop?
+      end
 
-        if args.include?('--no-remote')
-          exit
-        else
-          url = git_url(github_user, repo_name, :private => true)
-          args.replace %W"remote add -f #{github_user} #{url}"
-          args.after 'echo', ['new remote:', github_user]
-        end
+      if args.include?('--no-remote')
+        exit
+      else
+        url = forked_project.git_url(:private => true, :https => https_protocol?)
+        args.replace %W"remote add -f #{forked_project.owner} #{url}"
+        args.after 'echo', ['new remote:', forked_project.owner]
       end
     rescue HTTPExceptions
       display_http_exception("creating fork", $!.response)
@@ -440,17 +451,17 @@ module Hub
           end
         end
         new_repo_name ||= repo_name
-        repo_with_owner = "#{owner}/#{new_repo_name}"
+        new_project = github_project(new_repo_name, owner)
 
-        if repo_exists?(owner, new_repo_name)
-          warn "#{repo_with_owner} already exists on GitHub"
+        if repo_exists?(new_project)
+          warn "#{new_project.name_with_owner} already exists on #{new_project.host}"
           action = "set remote origin"
         else
           action = "created repository"
-          create_repo(repo_with_owner, options) unless args.noop?
+          create_repo(new_project, options) unless args.noop?
         end
 
-        url = git_url(owner, new_repo_name, :private => true)
+        url = new_project.git_url(:private => true, :https => https_protocol?)
 
         if remotes.first != 'origin'
           args.replace %W"remote add -f origin #{url}"
@@ -458,7 +469,7 @@ module Hub
           args.replace %W"remote -v"
         end
 
-        args.after 'echo', ["#{action}:", repo_with_owner]
+        args.after 'echo', ["#{action}:", new_project.name_with_owner]
       end
     rescue HTTPExceptions
       display_http_exception("creating repository", $!.response)
@@ -831,32 +842,32 @@ help
     end
 
     # Determines whether a user has a fork of the current repo on GitHub.
-    def repo_exists?(user, repo = repo_name)
+    def repo_exists?(project)
       load_net_http
-      url = API_REPO % [user, repo]
-      Net::HTTPSuccess === Net::HTTP.get_response(URI(url))
+      Net::HTTPSuccess === http_request(project.api_show_url('yaml'))
     end
 
     # Forks the current repo using the GitHub API.
     #
     # Returns nothing.
-    def fork_repo
+    def fork_repo(project)
       load_net_http
-      response = http_post API_FORK % [repo_owner, repo_name]
+      response = http_post project.api_fork_url('yaml')
       response.error! unless Net::HTTPSuccess === response
     end
 
     # Creates a new repo using the GitHub API.
     #
     # Returns nothing.
-    def create_repo(name, options = {})
-      params = {'name' => name.sub(/^#{github_user}\//, '')}
+    def create_repo(project, options = {})
+      is_org = project.owner != github_user(true, project.host)
+      params = {'name' => is_org ? project.name_with_owner : project.name}
       params['public'] = '0' if options[:private]
       params['description'] = options[:description] if options[:description]
       params['homepage'] = options[:homepage] if options[:homepage]
 
       load_net_http
-      response = http_post(API_CREATE, params)
+      response = http_post(project.api_create_url('yaml'), params)
       response.error! unless Net::HTTPSuccess === response
     end
 
@@ -872,15 +883,9 @@ help
       params['pull[body]'] = options[:body] if options[:body]
 
       load_net_http
-      response = http_post(API_PULLREQUEST % [project.owner, project.name], params)
+      response = http_post(project.api_create_pullrequest_url('json'), params)
       response.error! unless Net::HTTPSuccess === response
-      # GitHub bug: although we request YAML, it returns JSON
-      if response['Content-type'].to_s.include? 'application/json'
-        { "html_url" => response.body.match(/"html_url":\s*"(.+?)"/)[1] }
-      else
-        require 'yaml'
-        YAML.load(response.body)['pull']
-      end
+      JSON.parse(response.body)['pull']
     end
 
     def pullrequest_editmsg(changes)
@@ -925,11 +930,12 @@ help
       end
     end
 
-    def http_post(url, params = nil)
-      url = URI(url)
-      post = Net::HTTP::Post.new(url.request_uri)
-      post.basic_auth "#{github_user}/token", github_token
-      post.set_form_data params if params
+    def http_request(url, type = :Get)
+      url = URI(url) unless url.respond_to? :host
+      user, token = github_user(type != :Get, url.host), github_token(type != :Get, url.host)
+
+      req = Net::HTTP.const_get(type).new(url.request_uri)
+      req.basic_auth "#{user}/token", token if user and token
 
       port = url.port
       if use_ssl = 'https' == url.scheme and not use_ssl?
@@ -943,7 +949,16 @@ help
         # TODO: SSL peer verification
         http.verify_mode = OpenSSL::SSL::VERIFY_NONE
       end
-      http.start { http.request(post) }
+
+      yield req if block_given?
+      http.start { http.request(req) }
+    end
+
+    def http_post(url, params = nil)
+      http_request(url, :Post) do |req|
+        req.set_form_data params if params
+        req['Content-Length'] = req.body ? req.body.length : 0
+      end
     end
 
     def load_net_http
@@ -966,7 +981,13 @@ help
 
     def display_http_exception(action, response)
       $stderr.puts "Error #{action}: #{response.message} (HTTP #{response.code})"
-      warn "Check your token configuration (`git config github.token`)" if response.code.to_i == 401
+      case response.code.to_i
+      when 401 then warn "Check your token configuration (`git config github.token`)"
+      when 422
+        if response.content_type =~ /\bjson\b/ and data = JSON.parse(response.body) and data["error"]
+          $stderr.puts data["error"]
+        end
+      end
     end
 
   end

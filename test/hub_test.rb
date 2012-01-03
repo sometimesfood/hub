@@ -3,7 +3,6 @@ require 'webmock/test_unit'
 require 'rbconfig'
 require 'yaml'
 require 'forwardable'
-require 'json'
 
 WebMock::BodyPattern.class_eval do
   undef normalize_hash
@@ -57,22 +56,26 @@ class HubTest < Test::Unit::TestCase
       'rev-parse --symbolic-full-name master@{upstream}' => 'refs/remotes/origin/master',
       'config --get --bool hub.http-clone' => 'false',
       'config --get hub.protocol' => nil,
+      'config --get-all hub.host' => nil,
       'rev-parse -q --git-dir' => '.git'
   end
 
   def test_private_clone
+    stub_no_git_repo
     input   = "clone -p rtomayko/ronn"
     command = "git clone git@github.com:rtomayko/ronn.git"
     assert_command input, command
   end
 
   def test_private_clone_noop
+    stub_no_git_repo
     input   = "--noop clone -p rtomayko/ronn"
     command = "git clone git@github.com:rtomayko/ronn.git\n"
     assert_output command, hub(input)
   end
 
   def test_https_clone
+    stub_no_git_repo
     stub_https_is_preferred
     input   = "clone rtomayko/ronn"
     command = "git clone https://github.com/rtomayko/ronn.git"
@@ -80,34 +83,47 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_public_clone
+    stub_no_git_repo
     input   = "clone rtomayko/ronn"
     command = "git clone git://github.com/rtomayko/ronn.git"
     assert_command input, command
   end
 
   def test_your_private_clone
+    stub_no_git_repo
     input   = "clone -p resque"
     command = "git clone git@github.com:tpw/resque.git"
     assert_command input, command
   end
 
   def test_your_clone_is_always_private
+    stub_no_git_repo
     input   = "clone resque"
     command = "git clone git@github.com:tpw/resque.git"
     assert_command input, command
   end
 
+  def test_clone_repo_with_period
+    stub_no_git_repo
+    input   = "clone hookio/hook.js"
+    command = "git clone git://github.com/hookio/hook.js.git"
+    assert_command input, command
+  end
+
   def test_clone_with_arguments
+    stub_no_git_repo
     input   = "clone --bare -o master resque"
     command = "git clone --bare -o master git@github.com:tpw/resque.git"
     assert_command input, command
   end
 
   def test_clone_with_arguments_and_destination
+    stub_no_git_repo
     assert_forwarded "clone --template=one/two git://github.com/tpw/resque.git --origin master resquetastic"
   end
 
   def test_your_private_clone_fails_without_config
+    stub_no_git_repo
     out = hub("clone -p mustache") do
       stub_github_user(nil)
     end
@@ -116,6 +132,7 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_your_public_clone_fails_without_config
+    stub_no_git_repo
     out = hub("clone mustache") do
       stub_github_user(nil)
     end
@@ -124,23 +141,37 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_private_clone_left_alone
+    stub_no_git_repo
     assert_forwarded "clone git@github.com:rtomayko/ronn.git"
   end
 
   def test_public_clone_left_alone
+    stub_no_git_repo
     assert_forwarded "clone git://github.com/rtomayko/ronn.git"
   end
 
   def test_normal_public_clone_with_path
+    stub_no_git_repo
     assert_forwarded "clone git://github.com/rtomayko/ronn.git ronn-dev"
   end
 
   def test_normal_clone_from_path
+    stub_no_git_repo
     assert_forwarded "clone ./test"
   end
 
   def test_clone_with_host_alias
+    stub_no_git_repo
     assert_forwarded "clone server:git/repo.git"
+  end
+
+  def test_enterprise_clone
+    stub_no_git_repo
+    stub_github_user('myfiname', 'git.my.org')
+    with_host_env('git.my.org') do
+      assert_command "clone myrepo", "git clone git@git.my.org:myfiname/myrepo.git"
+      assert_command "clone another/repo", "git clone git@git.my.org:another/repo.git"
+    end
   end
 
   def test_alias_expand
@@ -168,16 +199,24 @@ class HubTest < Test::Unit::TestCase
     assert_command input, command
   end
 
+  def test_remote_add_with_name
+    input   = "remote add another hookio/hub.js"
+    command = "git remote add another git://github.com/hookio/hub.js.git"
+    assert_command input, command
+  end
+
   def test_private_remote_origin
     input   = "remote add -p origin"
     command = "git remote add origin git@github.com:tpw/hub.git"
     assert_command input, command
   end
 
-  def test_public_remote_origin_as_normal
-    input   = "remote add origin http://github.com/defunkt/resque.git"
-    command = "git remote add origin http://github.com/defunkt/resque.git"
-    assert_command input, command
+  def test_public_remote_url_untouched
+    assert_forwarded "remote add origin http://github.com/defunkt/resque.git"
+  end
+
+  def test_private_remote_url_untouched
+    assert_forwarded "remote add origin git@github.com:defunkt/resque.git"
   end
 
   def test_remote_from_rel_path
@@ -192,8 +231,10 @@ class HubTest < Test::Unit::TestCase
     assert_forwarded "remote add origin server:/git/repo.git"
   end
 
-  def test_private_remote_origin_as_normal
-    assert_forwarded "remote add origin git@github.com:defunkt/resque.git"
+  def test_remote_add_enterprise
+    stub_hub_host('git.my.org')
+    stub_repo_url('git@git.my.org:defunkt/hub.git')
+    assert_command "remote add another", "git remote add another git@git.my.org:another/hub.git"
   end
 
   def test_public_submodule
@@ -288,6 +329,29 @@ class HubTest < Test::Unit::TestCase
   def test_fetch_new_remote
     stub_remotes_group('xoebus', nil)
     stub_existing_fork('xoebus')
+
+    assert_commands "git remote add xoebus git://github.com/xoebus/hub.git",
+                    "git fetch xoebus",
+                    "fetch xoebus"
+  end
+
+  def test_fetch_new_remote_https_protocol
+    stub_remotes_group('xoebus', nil)
+    stub_existing_fork('xoebus')
+    stub_https_is_preferred
+
+    assert_commands "git remote add xoebus https://github.com/xoebus/hub.git",
+                    "git fetch xoebus",
+                    "fetch xoebus"
+  end
+
+  def test_fetch_no_auth
+    stub_github_user nil
+    stub_github_token nil
+    stub_remotes_group('xoebus', nil)
+    # stub_existing_fork('xoebus')
+    stub_request(:get, "https://github.com/api/v2/yaml/repos/show/xoebus/hub").
+      to_return(:status => 200)
 
     assert_commands "git remote add xoebus git://github.com/xoebus/hub.git",
                     "git fetch xoebus",
@@ -404,6 +468,13 @@ class HubTest < Test::Unit::TestCase
     end
   end
 
+  def test_am_no_tmpdir
+    with_tmpdir(nil) do
+      cmd = Hub("am https://github.com/defunkt/hub/pull/55").command
+      assert_includes '/tmp/55.patch', cmd
+    end
+  end
+
   def test_am_commit_url
     with_tmpdir('/tmp/') do
       url = 'https://github.com/davidbalbert/hub/commit/fdb9921'
@@ -460,7 +531,18 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_init
+    stub_no_remotes
+    stub_no_git_repo
     assert_commands "git init", "git remote add origin git@github.com:tpw/hub.git", "init -g"
+  end
+
+  def test_init_enterprise
+    stub_no_remotes
+    stub_no_git_repo
+    stub_github_user('myfiname', 'git.my.org')
+    with_host_env('git.my.org') do
+      assert_commands "git init", "git remote add origin git@git.my.org:myfiname/hub.git", "init -g"
+    end
   end
 
   def test_init_no_login
@@ -528,7 +610,10 @@ class HubTest < Test::Unit::TestCase
 
   def test_create_no_openssl
     stub_no_remotes
-    stub_nonexisting_fork('tpw')
+    # stub_nonexisting_fork('tpw')
+    stub_request(:get, "http://#{auth}github.com/api/v2/yaml/repos/show/tpw/hub").
+      to_return(:status => 404)
+
     stub_request(:post, "http://#{auth}github.com/api/v2/yaml/repos/create").
       with(:body => { 'name' => 'hub' })
 
@@ -555,12 +640,14 @@ class HubTest < Test::Unit::TestCase
 
   def test_create_with_env_authentication
     stub_no_remotes
-    stub_nonexisting_fork('mojombo')
-
     old_user  = ENV['GITHUB_USER']
     old_token = ENV['GITHUB_TOKEN']
     ENV['GITHUB_USER']  = 'mojombo'
     ENV['GITHUB_TOKEN'] = '123abc'
+
+    # stub_nonexisting_fork('mojombo')
+    stub_request(:get, "https://#{auth('mojombo', '123abc')}github.com/api/v2/yaml/repos/show/mojombo/hub").
+      to_return(:status => 404)
 
     stub_request(:post, "https://#{auth('mojombo', '123abc')}github.com/api/v2/yaml/repos/create").
       with(:body => { 'name' => 'hub' })
@@ -606,7 +693,7 @@ class HubTest < Test::Unit::TestCase
     stub_no_remotes
     stub_existing_fork('tpw')
 
-    expected = "tpw/hub already exists on GitHub\n"
+    expected = "tpw/hub already exists on github.com\n"
     expected << "remote add -f origin git@github.com:tpw/hub.git\n"
     expected << "set remote origin: tpw/hub\n"
     assert_equal expected, hub("create") { ENV['GIT'] = 'echo' }
@@ -617,7 +704,7 @@ class HubTest < Test::Unit::TestCase
     stub_existing_fork('tpw')
     stub_https_is_preferred
 
-    expected = "tpw/hub already exists on GitHub\n"
+    expected = "tpw/hub already exists on github.com\n"
     expected << "remote add -f origin https://github.com/tpw/hub.git\n"
     expected << "set remote origin: tpw/hub\n"
     assert_equal expected, hub("create") { ENV['GIT'] = 'echo' }
@@ -647,11 +734,33 @@ class HubTest < Test::Unit::TestCase
 
   def test_fork
     stub_nonexisting_fork('tpw')
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/repos/fork/defunkt/hub")
+    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/repos/fork/defunkt/hub").
+      with { |req| req.headers['Content-Length'] == 0 }
 
     expected = "remote add -f tpw git@github.com:tpw/hub.git\n"
     expected << "new remote: tpw\n"
-    assert_equal expected, hub("fork") { ENV['GIT'] = 'echo' }
+    assert_output expected, "fork"
+  end
+
+  def test_fork_not_in_repo
+    stub_no_git_repo
+    expected = "fatal: Not a git repository\n"
+    assert_output expected, "fork"
+  end
+
+  def test_fork_enterprise
+    stub_hub_host('git.my.org')
+    stub_repo_url('git@git.my.org:defunkt/hub.git')
+    stub_github_user('myfiname', 'git.my.org')
+    stub_github_token('789xyz', 'git.my.org')
+
+    stub_request(:get, "https://#{auth('myfiname', '789xyz')}git.my.org/api/v2/yaml/repos/show/myfiname/hub").
+      to_return(:status => 404)
+    stub_request(:post, "https://#{auth('myfiname', '789xyz')}git.my.org/api/v2/yaml/repos/fork/defunkt/hub")
+
+    expected = "remote add -f myfiname git@git.my.org:myfiname/hub.git\n"
+    expected << "new remote: myfiname\n"
+    assert_output expected, "fork"
   end
 
   def test_fork_failed
@@ -673,7 +782,7 @@ class HubTest < Test::Unit::TestCase
   def test_fork_already_exists
     stub_existing_fork('tpw')
 
-    expected = "tpw/hub already exists on GitHub\n"
+    expected = "tpw/hub already exists on github.com\n"
     expected << "remote add -f tpw git@github.com:tpw/hub.git\n"
     expected << "new remote: tpw\n"
     assert_equal expected, hub("fork") { ENV['GIT'] = 'echo' }
@@ -683,7 +792,7 @@ class HubTest < Test::Unit::TestCase
     stub_existing_fork('tpw')
     stub_https_is_preferred
 
-    expected = "tpw/hub already exists on GitHub\n"
+    expected = "tpw/hub already exists on github.com\n"
     expected << "remote add -f tpw https://github.com/tpw/hub.git\n"
     expected << "new remote: tpw\n"
     assert_equal expected, hub("fork") { ENV['GIT'] = 'echo' }
@@ -708,9 +817,10 @@ class HubTest < Test::Unit::TestCase
     stub_branch('refs/heads/feature')
     stub_tracking_nothing('feature')
 
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/defunkt/hub").
-      with(:body => { 'pull' => {'base' => "master", 'head' => "tpw:feature", 'title' => "hereyougo"} }).
-      to_return(:body => mock_pullreq_response(1))
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
+      with(:body => { 'pull' => {'base' => "master", 'head' => "tpw:feature", 'title' => "hereyougo"} }) { |req|
+        req.headers['Content-Length'] == 76
+      }.to_return(:body => mock_pullreq_response(1))
 
     expected = "https://github.com/defunkt/hub/pull/1\n"
     assert_output expected, "pull-request hereyougo -f"
@@ -721,7 +831,7 @@ class HubTest < Test::Unit::TestCase
     stub_tracking('feature', 'mislav', 'yay-feature')
     stub_command_output "rev-list --cherry mislav/master...", nil
 
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/defunkt/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mislav:yay-feature", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
@@ -729,8 +839,25 @@ class HubTest < Test::Unit::TestCase
     assert_output expected, "pull-request hereyougo -f"
   end
 
+  def test_pullrequest_enterprise_no_tracking
+    stub_hub_host('git.my.org')
+    stub_repo_url('git@git.my.org:defunkt/hub.git')
+    stub_github_user('myfiname', 'git.my.org')
+    stub_github_token('789xyz', 'git.my.org')
+    stub_branch('refs/heads/feature')
+    stub_tracking_nothing('feature')
+    stub_command_output "rev-list --cherry origin/feature...", nil
+
+    stub_request(:post, "https://#{auth('myfiname', '789xyz')}git.my.org/api/v2/json/pulls/defunkt/hub").
+      with(:body => { 'pull' => {'base' => "master", 'head' => "myfiname:feature", 'title' => "hereyougo"} }).
+      to_return(:body => mock_pullreq_response(1, 'defunkt/hub', 'git.my.org'))
+
+    expected = "https://git.my.org/defunkt/hub/pull/1\n"
+    assert_output expected, "pull-request hereyougo -f"
+  end
+
   def test_pullrequest_explicit_head
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/defunkt/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "tpw:yay-feature", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
@@ -739,7 +866,7 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_pullrequest_explicit_head_with_owner
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/defunkt/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mojombo:feature", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
@@ -748,7 +875,7 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_pullrequest_explicit_base
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/defunkt/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "feature", 'head' => "defunkt:master", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
@@ -757,7 +884,7 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_pullrequest_explicit_base_with_owner
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/mojombo/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/mojombo/hub").
       with(:body => { 'pull' => {'base' => "feature", 'head' => "defunkt:master", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
@@ -766,7 +893,7 @@ class HubTest < Test::Unit::TestCase
   end
 
   def test_pullrequest_explicit_base_with_repo
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/mojombo/hubbub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/mojombo/hubbub").
       with(:body => { 'pull' => {'base' => "feature", 'head' => "defunkt:master", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
@@ -779,7 +906,7 @@ class HubTest < Test::Unit::TestCase
     stub_tracking('myfix', 'mislav', 'awesomefix')
     stub_command_output "rev-list --cherry mislav/awesomefix...", nil
 
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/defunkt/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mislav:awesomefix", 'issue' => '92'} }).
       to_return(:body => mock_pullreq_response(92))
 
@@ -792,7 +919,7 @@ class HubTest < Test::Unit::TestCase
     stub_tracking('myfix', 'mislav', 'awesomefix')
     stub_command_output "rev-list --cherry mislav/awesomefix...", nil
 
-    stub_request(:post, "https://#{auth}github.com/api/v2/yaml/pulls/mojombo/hub").
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/mojombo/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mislav:awesomefix", 'issue' => '92'} }).
       to_return(:body => mock_pullreq_response(92, 'mojombo/hub'))
 
@@ -800,12 +927,23 @@ class HubTest < Test::Unit::TestCase
     assert_output expected, "pull-request https://github.com/mojombo/hub/issues/92#comment_4"
   end
 
+  def test_pullrequest_fails
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
+      to_return(:status => [422, "Unprocessable Entity"],
+                :headers => {"Content-type" => "application/json"},
+                :body => %({"error":["oh no!", "it failed."]}))
+
+    expected = "Error creating pull request: Unprocessable Entity (HTTP 422)\n"
+    expected << "oh no!\nit failed.\n"
+    assert_output expected, "pull-request hereyougo -b feature -f"
+  end
+
   def test_checkout_no_changes
     assert_forwarded "checkout master"
   end
 
   def test_checkout_pullrequest
-    stub_request(:get, "http://github.com/api/v2/json/pulls/defunkt/hub/73").
+    stub_request(:get, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub/73").
       to_return(:body => mock_pull_response('blueyed:feature'))
 
     assert_commands 'git remote add -f -t feature blueyed git://github.com/blueyed/hub.git',
@@ -813,8 +951,17 @@ class HubTest < Test::Unit::TestCase
       "checkout https://github.com/defunkt/hub/pull/73/files"
   end
 
+  def test_checkout_private_pullrequest
+    stub_request(:get, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub/73").
+      to_return(:body => mock_pull_response('blueyed:feature', :private))
+
+    assert_commands 'git remote add -f -t feature blueyed git@github.com:blueyed/hub.git',
+      'git checkout -b blueyed-feature blueyed/feature',
+      "checkout https://github.com/defunkt/hub/pull/73/files"
+  end
+
   def test_checkout_pullrequest_custom_branch
-    stub_request(:get, "http://github.com/api/v2/json/pulls/defunkt/hub/73").
+    stub_request(:get, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub/73").
       to_return(:body => mock_pull_response('blueyed:feature'))
 
     assert_commands 'git remote add -f -t feature blueyed git://github.com/blueyed/hub.git',
@@ -825,7 +972,7 @@ class HubTest < Test::Unit::TestCase
   def test_checkout_pullrequest_existing_remote
     stub_command_output 'remote', "origin\nblueyed"
 
-    stub_request(:get, "http://github.com/api/v2/json/pulls/defunkt/hub/73").
+    stub_request(:get, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub/73").
       to_return(:body => mock_pull_response('blueyed:feature'))
 
     assert_commands 'git remote set-branches --add blueyed feature',
@@ -991,9 +1138,22 @@ config
       "open https://github.com/mislav/hub/commits/experimental"
   end
 
+  def test_hub_browse_on_complex_branch
+    stub_branch('refs/heads/feature/foo')
+    stub_tracking('feature/foo', 'mislav', 'feature/bar')
+
+    assert_command 'browse',
+      'open https://github.com/mislav/hub/tree/feature/bar'
+  end
+
   def test_hub_browse_current
     assert_command "browse", "open https://github.com/defunkt/hub"
     assert_command "browse --", "open https://github.com/defunkt/hub"
+  end
+
+  def test_hub_browse_current_https_uri
+    stub_repo_url "https://github.com/defunkt/hub"
+    assert_command "browse", "open https://github.com/defunkt/hub"
   end
 
   def test_hub_browse_commit_from_current
@@ -1092,14 +1252,16 @@ config
     assert_equal %w[git --bare -c core.awesome=true -c name=value --git-dir=/srv/www], git_reader.executable
   end
 
-  protected
+  private
 
-    def stub_github_user(name)
-      stub_config_value 'github.user', name
+    def stub_github_user(name, host = '')
+      host = %(."#{host}") unless host.empty?
+      stub_config_value "github#{host}.user", name
     end
 
-    def stub_github_token(token)
-      stub_config_value 'github.token', token
+    def stub_github_token(token, host = '')
+      host = %(."#{host}") unless host.empty?
+      stub_config_value "github#{host}.token", token
     end
 
     def stub_repo_url(value, remote_name = 'origin')
@@ -1144,7 +1306,7 @@ config
     end
 
     def stub_fork(user, repo, status)
-      stub_request(:get, "github.com/api/v2/yaml/repos/show/#{user}/#{repo}").
+      stub_request(:get, "https://#{auth}github.com/api/v2/yaml/repos/show/#{user}/#{repo}").
         to_return(:status => status)
     end
 
@@ -1154,6 +1316,10 @@ config
 
     def stub_https_is_preferred
       stub_config_value 'hub.protocol', 'https'
+    end
+
+    def stub_hub_host(names)
+      stub_config_value "hub.host", Array(names).join("\n"), '--get-all'
     end
 
     def with_browser_env(value)
@@ -1168,6 +1334,13 @@ config
       yield
     ensure
       ENV['TMPDIR'] = dir
+    end
+
+    def with_host_env(value)
+      host, ENV['GITHUB_HOST'] = ENV['GITHUB_HOST'], value
+      yield
+    ensure
+      ENV['GITHUB_HOST'] = host
     end
 
     def assert_browser(browser)
@@ -1188,14 +1361,12 @@ config
       "#{user}%2Ftoken:#{password}@"
     end
 
-    def mock_pullreq_response(id, name_with_owner = 'defunkt/hub')
-      YAML.dump('pull' => {
-        'html_url' => "https://github.com/#{name_with_owner}/pull/#{id}"
-      })
+    def mock_pullreq_response(id, name_with_owner = 'defunkt/hub', host = 'github.com')
+      %({"pull": { "html_url": "https://#{host}/#{name_with_owner}/pull/#{id}" }})
     end
 
-    def mock_pull_response(label)
-      JSON.generate('pull' => { 'head' => {'label' => label} })
+    def mock_pull_response(label, priv = false)
+      %({"pull": { "head": { "label": "#{label}", "repository": {"private":#{!!priv}} }}})
     end
 
     def improved_help_text
