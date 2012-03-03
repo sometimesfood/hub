@@ -130,7 +130,7 @@ module Hub
       end
 
       def upstream_project
-        if upstream = current_branch.upstream
+        if branch = current_branch and upstream = branch.upstream and upstream.remote?
           remote = remote_by_name upstream.remote_name
           remote.project
         end
@@ -429,6 +429,10 @@ module Hub
 
     def git_alias_for(name)
       git_config "alias.#{name}"
+    end
+
+    def rev_list(a, b)
+      git_command("rev-list --cherry-pick --right-only --no-merges #{a}...#{b}")
     end
 
     PWD = Dir.pwd

@@ -34,7 +34,7 @@ module Hub
     # provides git interrogation methods
     extend Context
 
-    NAME_RE = /[\w.-]+/
+    NAME_RE = /\w[\w.-]*/
     OWNER_RE = /[a-zA-Z0-9-]+/
     NAME_WITH_OWNER_RE = /^(?:#{NAME_RE}|#{OWNER_RE}\/#{NAME_RE})$/
 
@@ -108,7 +108,11 @@ module Hub
       options[:base] ||= master_branch.short_name
 
       if tracked_branch = options[:head].nil? && current_branch.upstream
-        if base_project == head_project and tracked_branch.short_name == options[:base]
+        if !tracked_branch.remote?
+          # The current branch is tracking another local branch. Pretend there is
+          # no upstream configuration at all.
+          tracked_branch = nil
+        elsif base_project == head_project and tracked_branch.short_name == options[:base]
           $stderr.puts "Aborted: head branch is the same as base (#{options[:base].inspect})"
           warn "(use `-h <branch>` to specify an explicit pull request head)"
           abort
@@ -125,7 +129,7 @@ module Hub
       remote_branch = "#{head_project.remote}/#{options[:head]}"
       options[:head] = "#{head_project.owner}:#{options[:head]}"
 
-      if !force and tracked_branch and local_commits = git_command("rev-list --cherry #{remote_branch}...")
+      if !force and tracked_branch and local_commits = rev_list(remote_branch, nil)
         $stderr.puts "Aborted: #{local_commits.split("\n").size} commits are not yet pushed to #{remote_branch}"
         warn "(use `-f` to force submit a pull request anyway)"
         abort
@@ -138,10 +142,25 @@ module Hub
 
       unless options[:title] or options[:issue]
         base_branch = "#{base_project.remote}/#{options[:base]}"
-        changes = git_command "log --no-color --pretty=medium --cherry %s...%s" %
-          [base_branch, remote_branch]
+        commits = rev_list(base_branch, remote_branch).to_s.split("\n")
 
-        options[:title], options[:body] = pullrequest_editmsg(changes) { |msg|
+        case commits.size
+        when 0
+          default_message = commit_summary = nil
+        when 1
+          format = '%w(78,0,0)%s%n%+b'
+          default_message = git_command "show -s --format='#{format}' #{commits.first}"
+          commit_summary = nil
+        else
+          format = '%h (%aN, %ar)%n%w(78,3,3)%s%n%+b'
+          default_message = nil
+          commit_summary = git_command "log --no-color --format='%s' --cherry %s...%s" %
+            [format, base_branch, remote_branch]
+        end
+
+        options[:title], options[:body] = pullrequest_editmsg(commit_summary) { |msg|
+          msg.puts default_message if default_message
+          msg.puts ""
           msg.puts "# Requesting a pull to #{base_project.owner}:#{options[:base]} from #{options[:head]}"
           msg.puts "#"
           msg.puts "# Write a message for this pull request. The first block"
@@ -181,7 +200,7 @@ module Hub
         else
           # $ hub clone rtomayko/tilt
           # $ hub clone tilt
-          if arg =~ NAME_WITH_OWNER_RE
+          if arg =~ NAME_WITH_OWNER_RE and !File.directory?(arg)
             # FIXME: this logic shouldn't be duplicated here!
             name, owner = arg, nil
             owner, name = name.split('/', 2) if name.index('/')
@@ -303,17 +322,20 @@ module Hub
 
     # $ git checkout https://github.com/defunkt/hub/pull/73
     # > git remote add -f -t feature git://github:com/mislav/hub.git
-    # > git checkout -b mislav-feature mislav/feature
+    # > git checkout --track -B mislav-feature mislav/feature
     def checkout(args)
-      if (2..3) === args.length and url = resolve_github_url(args[1]) and url.project_path =~ /^pull\/(\d+)/
+      _, url_arg, new_branch_name = args.words
+      if url = resolve_github_url(url_arg) and url.project_path =~ /^pull\/(\d+)/
         pull_id = $1
 
         load_net_http
         response = http_request(url.project.api_pullrequest_url(pull_id, 'json'))
         pull_data = JSON.parse(response.body)['pull']
 
+        args.delete new_branch_name
         user, branch = pull_data['head']['label'].split(':', 2)
-        new_branch_name = args[2] || "#{user}-#{branch}"
+        abort "Error: #{user}'s fork is not available anymore" unless pull_data['head']['repository']
+        new_branch_name ||= "#{user}-#{branch}"
 
         if remotes.include? user
           args.before ['remote', 'set-branches', '--add', user, branch]
@@ -323,7 +345,9 @@ module Hub
                                                                :https => https_protocol?)
           args.before ['remote', 'add', '-f', '-t', branch, user, url]
         end
-        args[1..-1] = ['-b', new_branch_name, "#{user}/#{branch}"]
+        idx = args.index url_arg
+        args.delete_at idx
+        args.insert idx, '--track', '-B', new_branch_name, "#{user}/#{branch}"
       end
     end
 
@@ -353,7 +377,7 @@ module Hub
           args[args.index(ref)] = sha
 
           if remote = project.remote and remotes.include? remote
-            args.before ['fetch', remote]
+            args.before ['fetch', remote.to_s]
           else
             args.before ['remote', 'add', '-f', project.owner, project.git_url(:https => https_protocol?)]
           end
@@ -368,6 +392,8 @@ module Hub
       if url = args.find { |a| a =~ %r{^https?://(gist\.)?github\.com/} }
         idx = args.index(url)
         gist = $1 == 'gist.'
+        # strip the fragment part of the url
+        url = url.sub(/#.+/, '')
         # strip extra path from "pull/42/files", "pull/42/commits"
         url = url.sub(%r{(/pull/\d+)/\w*$}, '\1') unless gist
         ext = gist ? '.txt' : '.patch'
@@ -515,9 +541,11 @@ module Hub
           # $ hub browse pjhyett/github-services
           # $ hub browse github-services
           project = github_project dest
+          branch = master_branch
         else
           # $ hub browse
           project = current_project
+          branch = current_branch && current_branch.upstream || master_branch
         end
 
         abort "Usage: hub browse [<USER>/]<REPOSITORY>" unless project
@@ -525,10 +553,8 @@ module Hub
         # $ hub browse -- wiki
         path = case subpage = args.shift
         when 'commits'
-          branch = (!dest && current_branch.upstream) || master_branch
           "/commits/#{branch.short_name}"
         when 'tree', NilClass
-          branch = !dest && current_branch.upstream
           "/tree/#{branch.short_name}" if branch and !branch.master?
         else
           "/#{subpage}"
@@ -891,14 +917,15 @@ help
     def pullrequest_editmsg(changes)
       message_file = File.join(git_dir, 'PULLREQ_EDITMSG')
       File.open(message_file, 'w') { |msg|
-        msg.puts
         yield msg
         if changes
           msg.puts "#\n# Changes:\n#"
           msg.puts changes.gsub(/^/, '# ').gsub(/ +$/, '')
         end
       }
-      edit_cmd = Array(git_editor).dup << message_file
+      edit_cmd = Array(git_editor).dup
+      edit_cmd << '-c' << 'set ft=gitcommit' if edit_cmd[0] =~ /^[mg]?vim$/
+      edit_cmd << message_file
       system(*edit_cmd)
       abort "can't open text editor for pull request message" unless $?.success?
       title, body = read_editmsg(message_file)
@@ -937,18 +964,7 @@ help
       req = Net::HTTP.const_get(type).new(url.request_uri)
       req.basic_auth "#{user}/token", token if user and token
 
-      port = url.port
-      if use_ssl = 'https' == url.scheme and not use_ssl?
-        # ruby compiled without openssl
-        use_ssl = false
-        port = 80
-      end
-
-      http = Net::HTTP.new(url.host, port)
-      if http.use_ssl = use_ssl
-        # TODO: SSL peer verification
-        http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-      end
+      http = setup_http(url)
 
       yield req if block_given?
       http.start { http.request(req) }
@@ -961,6 +977,32 @@ help
       end
     end
 
+    def setup_http(url)
+      port = url.port
+      if use_ssl = 'https' == url.scheme and not use_ssl?
+        # ruby compiled without openssl
+        use_ssl = false
+        port = 80
+      end
+
+      http_args = [url.host, port]
+      if proxy = proxy_url(use_ssl)
+        http_args.concat proxy.select(:host, :port)
+        if proxy.userinfo
+          require 'cgi'
+          http_args.concat proxy.userinfo.split(':', 2).map {|a| CGI.unescape a }
+        end
+      end
+
+      http = Net::HTTP.new(*http_args)
+
+      if http.use_ssl = use_ssl
+        # TODO: SSL peer verification
+        http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+      end
+      return http
+    end
+
     def load_net_http
       require 'net/https'
     rescue LoadError
@@ -969,6 +1011,14 @@ help
 
     def use_ssl?
       defined? ::OpenSSL
+    end
+
+    def proxy_url(use_ssl)
+      env_name = "HTTP#{use_ssl ? 'S' : ''}_PROXY"
+      if proxy = ENV[env_name] || ENV[env_name.downcase]
+        proxy = "http://#{proxy}" unless proxy.include? '://'
+        URI.parse(proxy)
+      end
     end
 
     # Fake exception type for net/http exception handling.

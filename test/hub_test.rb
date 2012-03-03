@@ -160,6 +160,16 @@ class HubTest < Test::Unit::TestCase
     assert_forwarded "clone ./test"
   end
 
+  def test_unchanged_clone_from_existing_directory
+    stub_no_git_repo
+    assert_forwarded "clone test"
+  end
+
+  def test_local_clone_with_destination
+    stub_no_git_repo
+    assert_forwarded "clone -l . ../copy"
+  end
+
   def test_clone_with_host_alias
     stub_no_git_repo
     assert_forwarded "clone server:git/repo.git"
@@ -461,7 +471,7 @@ class HubTest < Test::Unit::TestCase
     with_tmpdir('/tmp/') do
       assert_commands "curl -#LA 'hub #{Hub::Version}' https://github.com/defunkt/hub/pull/55.patch -o /tmp/55.patch",
                       "git am --signoff /tmp/55.patch -p2",
-                      "am --signoff https://github.com/defunkt/hub/pull/55 -p2"
+                      "am --signoff https://github.com/defunkt/hub/pull/55#comment_123 -p2"
 
       cmd = Hub("am https://github.com/defunkt/hub/pull/55/files").command
       assert_includes '/pull/55.patch', cmd
@@ -806,7 +816,7 @@ class HubTest < Test::Unit::TestCase
 
   def test_pullrequest_with_unpushed_commits
     stub_tracking('master', 'mislav', 'master')
-    stub_command_output "rev-list --cherry mislav/master...", "+abcd1234\n+bcde2345"
+    stub_command_output "rev-list --cherry-pick --right-only --no-merges mislav/master...", "+abcd1234\n+bcde2345"
 
     expected = "Aborted: 2 commits are not yet pushed to mislav/master\n" <<
       "(use `-f` to force submit a pull request anyway)\n"
@@ -829,10 +839,21 @@ class HubTest < Test::Unit::TestCase
   def test_pullrequest_from_tracking_branch
     stub_branch('refs/heads/feature')
     stub_tracking('feature', 'mislav', 'yay-feature')
-    stub_command_output "rev-list --cherry mislav/master...", nil
 
     stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mislav:yay-feature", 'title' => "hereyougo"} }).
+      to_return(:body => mock_pullreq_response(1))
+
+    expected = "https://github.com/defunkt/hub/pull/1\n"
+    assert_output expected, "pull-request hereyougo -f"
+  end
+
+  def test_pullrequest_from_branch_tracking_local
+    stub_branch('refs/heads/feature')
+    stub_tracking('feature', 'refs/heads/master')
+
+    stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
+      with(:body => { 'pull' => {'base' => "master", 'head' => "tpw:feature", 'title' => "hereyougo"} }).
       to_return(:body => mock_pullreq_response(1))
 
     expected = "https://github.com/defunkt/hub/pull/1\n"
@@ -846,7 +867,7 @@ class HubTest < Test::Unit::TestCase
     stub_github_token('789xyz', 'git.my.org')
     stub_branch('refs/heads/feature')
     stub_tracking_nothing('feature')
-    stub_command_output "rev-list --cherry origin/feature...", nil
+    stub_command_output "rev-list --cherry-pick --right-only --no-merges origin/feature...", nil
 
     stub_request(:post, "https://#{auth('myfiname', '789xyz')}git.my.org/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "myfiname:feature", 'title' => "hereyougo"} }).
@@ -904,7 +925,7 @@ class HubTest < Test::Unit::TestCase
   def test_pullrequest_existing_issue
     stub_branch('refs/heads/myfix')
     stub_tracking('myfix', 'mislav', 'awesomefix')
-    stub_command_output "rev-list --cherry mislav/awesomefix...", nil
+    stub_command_output "rev-list --cherry-pick --right-only --no-merges mislav/awesomefix...", nil
 
     stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/defunkt/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mislav:awesomefix", 'issue' => '92'} }).
@@ -917,7 +938,7 @@ class HubTest < Test::Unit::TestCase
   def test_pullrequest_existing_issue_url
     stub_branch('refs/heads/myfix')
     stub_tracking('myfix', 'mislav', 'awesomefix')
-    stub_command_output "rev-list --cherry mislav/awesomefix...", nil
+    stub_command_output "rev-list --cherry-pick --right-only --no-merges mislav/awesomefix...", nil
 
     stub_request(:post, "https://#{auth}github.com/api/v2/json/pulls/mojombo/hub").
       with(:body => { 'pull' => {'base' => "master", 'head' => "mislav:awesomefix", 'issue' => '92'} }).
@@ -947,8 +968,8 @@ class HubTest < Test::Unit::TestCase
       to_return(:body => mock_pull_response('blueyed:feature'))
 
     assert_commands 'git remote add -f -t feature blueyed git://github.com/blueyed/hub.git',
-      'git checkout -b blueyed-feature blueyed/feature',
-      "checkout https://github.com/defunkt/hub/pull/73/files"
+      'git checkout -f --track -B blueyed-feature blueyed/feature -q',
+      "checkout -f https://github.com/defunkt/hub/pull/73/files -q"
   end
 
   def test_checkout_private_pullrequest
@@ -956,7 +977,7 @@ class HubTest < Test::Unit::TestCase
       to_return(:body => mock_pull_response('blueyed:feature', :private))
 
     assert_commands 'git remote add -f -t feature blueyed git@github.com:blueyed/hub.git',
-      'git checkout -b blueyed-feature blueyed/feature',
+      'git checkout --track -B blueyed-feature blueyed/feature',
       "checkout https://github.com/defunkt/hub/pull/73/files"
   end
 
@@ -965,7 +986,7 @@ class HubTest < Test::Unit::TestCase
       to_return(:body => mock_pull_response('blueyed:feature'))
 
     assert_commands 'git remote add -f -t feature blueyed git://github.com/blueyed/hub.git',
-      'git checkout -b review blueyed/feature',
+      'git checkout --track -B review blueyed/feature',
       "checkout https://github.com/defunkt/hub/pull/73/files review"
   end
 
@@ -977,7 +998,7 @@ class HubTest < Test::Unit::TestCase
 
     assert_commands 'git remote set-branches --add blueyed feature',
       'git fetch blueyed +refs/heads/feature:refs/remotes/blueyed/feature',
-      'git checkout -b blueyed-feature blueyed/feature',
+      'git checkout --track -B blueyed-feature blueyed/feature',
       "checkout https://github.com/defunkt/hub/pull/73/files"
   end
 
@@ -1146,6 +1167,11 @@ config
       'open https://github.com/mislav/hub/tree/feature/bar'
   end
 
+  def test_hub_browse_no_branch
+    stub_branch(nil)
+    assert_command 'browse', 'open https://github.com/defunkt/hub'
+  end
+
   def test_hub_browse_current
     assert_command "browse", "open https://github.com/defunkt/hub"
     assert_command "browse --", "open https://github.com/defunkt/hub"
@@ -1272,13 +1298,13 @@ config
       stub_command_output 'symbolic-ref -q HEAD', value
     end
 
-    def stub_tracking(from, remote_name, remote_branch)
+    def stub_tracking(from, upstream, remote_branch = nil)
       stub_command_output "rev-parse --symbolic-full-name #{from}@{upstream}",
-        remote_branch ? "refs/remotes/#{remote_name}/#{remote_branch}" : nil
+        remote_branch ? "refs/remotes/#{upstream}/#{remote_branch}" : upstream
     end
 
     def stub_tracking_nothing(from = 'master')
-      stub_tracking(from, nil, nil)
+      stub_tracking(from, nil)
     end
 
     def stub_remotes_group(name, value)
