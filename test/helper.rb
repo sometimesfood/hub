@@ -1,6 +1,5 @@
 require 'test/unit'
 require 'hub'
-require 'hub/standalone'
 
 # We're checking for `open` in our tests
 ENV['BROWSER'] = 'open'
@@ -8,6 +7,9 @@ ENV['BROWSER'] = 'open'
 # Setup path with fake executables in case a test hits them
 fakebin_dir = File.expand_path('../fakebin', __FILE__)
 ENV['PATH'] = "#{fakebin_dir}:#{ENV['PATH']}"
+
+# Use an isolated config file in testing
+ENV['HUB_CONFIG'] = File.join(ENV['TMPDIR'] || '/tmp', 'hub-test-config')
 
 class Test::Unit::TestCase
   # Shortcut for creating a `Hub` instance. Pass it what you would
@@ -80,22 +82,6 @@ class Test::Unit::TestCase
     assert !cmd.args.changed?, "arguments were not supposed to change: #{cmd.args.inspect}"
   end
 
-  # Asserts that `hub` will show a specific alias command for a
-  # specific shell.
-  #
-  # e.g.
-  #  assert_alias_command "sh", "alias git=hub"
-  #
-  # Here we are saying that this:
-  #   $ hub alias sh
-  # Should display this:
-  #   Run this in your shell to start using `hub` as `git`:
-  #     alias git=hub
-  def assert_alias_command(shell, command)
-    expected = "Run this in your shell to start using `hub` as `git`:\n  %s\n"
-    assert_equal(expected % command, hub("alias #{shell}"))
-  end
-
   # Asserts that `haystack` includes `needle`.
   def assert_includes(needle, haystack)
     assert haystack.include?(needle),
@@ -113,5 +99,16 @@ class Test::Unit::TestCase
     output = hub(command) { ENV['GIT'] = 'echo' }
     assert expected == output,
       "expected:\n#{expected}\ngot:\n#{output}"
+  end
+
+  def edit_hub_config
+    config = ENV['HUB_CONFIG']
+    if File.exist? config
+      data = YAML.load File.read(config)
+    else
+      data = {}
+    end
+    yield data
+    File.open(config, 'w') { |cfg| cfg << YAML.dump(data) }
   end
 end

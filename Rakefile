@@ -27,7 +27,7 @@ end
 # Tests
 #
 
-task :default => :test
+task :default => [:test, :features]
 
 Rake::TestTask.new do |t|
   t.libs << 'test'
@@ -36,14 +36,9 @@ Rake::TestTask.new do |t|
   t.verbose = false
 end
 
-if command? :kicker
-  desc "Launch Kicker (like autotest)"
-  task :kicker do
-    puts "Kicking... (ctrl+c to cancel)"
-    exec "kicker -e rake test lib"
-  end
+task :features do
+  sh 'RUBYLIB=lib cucumber -f progress -t ~@wip features'
 end
-
 
 #
 # Manual
@@ -100,7 +95,7 @@ end
 # Build
 #
 
-file "hub" => FileList.new("lib/hub/*.rb", "man/hub.1") do |task|
+file "hub" => FileList.new("lib/hub.rb", "lib/hub/*.rb", "man/hub.1") do |task|
   Rake::Task[:load_path].invoke
   require 'hub/standalone'
   Hub::Standalone.save(task.name)

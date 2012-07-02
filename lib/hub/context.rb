@@ -3,8 +3,8 @@ require 'forwardable'
 require 'uri'
 
 module Hub
-  # Provides methods for inspecting the environment, such as GitHub user/token
-  # settings, repository info, and similar.
+  # Methods for inspecting the environment, such as reading git config,
+  # repository info, and other.
   module Context
     extend Forwardable
 
@@ -75,6 +75,9 @@ module Hub
       end
     end
 
+    class Error < RuntimeError; end
+    class FatalError < Error; end
+
     private
 
     def git_reader
@@ -89,13 +92,13 @@ module Hub
         if is_repo?
           LocalRepo.new git_reader, current_dir
         elsif fatal
-          abort "fatal: Not a git repository"
+          raise FatalError, "Not a git repository"
         end
       end
     end
 
     repo_methods = [
-      :current_branch, :master_branch,
+      :current_branch,
       :current_project, :upstream_project,
       :repo_owner, :repo_host,
       :remotes, :remotes_group, :origin_remote
@@ -103,6 +106,15 @@ module Hub
     def_delegator :local_repo, :name, :repo_name
     def_delegators :local_repo, *repo_methods
     private :repo_name, *repo_methods
+
+    def master_branch
+      if local_repo(false)
+        local_repo.master_branch
+      else
+        # FIXME: duplicates functionality of LocalRepo#master_branch
+        Branch.new nil, 'refs/heads/master'
+      end
+    end
 
     class LocalRepo < Struct.new(:git_reader, :dir)
       include GitReaderMethods
@@ -176,12 +188,19 @@ module Hub
         git_config('hub.host', :all).to_s.split("\n") + [default_host]
       end
 
-      def default_host
+      def self.default_host
         ENV['GITHUB_HOST'] || main_host
       end
 
-      def main_host
+      def self.main_host
         'github.com'
+      end
+
+      extend Forwardable
+      def_delegators :'self.class', :default_host, :main_host
+
+      def ssh_config
+        @ssh_config ||= SshConfig.new
       end
     end
 
@@ -193,13 +212,16 @@ module Hub
         end
       end
 
+      attr_accessor :repo_data
+
       def initialize(*args)
         super
-        self.host ||= local_repo.default_host
+        self.host ||= (local_repo || LocalRepo).default_host
       end
 
       def private?
-        local_repo and host != local_repo.main_host
+        repo_data ? repo_data.fetch('private') :
+          host != (local_repo || LocalRepo).main_host
       end
 
       def owned_by(new_owner)
@@ -238,30 +260,6 @@ module Hub
         elsif options[:private] or private? then "git@#{host}:"
         else "git://#{host}/"
         end + name_with_owner + '.git'
-      end
-
-      def api_url(type, resource, action)
-        URI("https://#{host}/api/v2/#{type}/#{resource}/#{action}")
-      end
-
-      def api_show_url(type)
-        api_url(type, 'repos', "show/#{owner}/#{name}")
-      end
-
-      def api_fork_url(type)
-        api_url(type, 'repos', "fork/#{owner}/#{name}")
-      end
-
-      def api_create_url(type)
-        api_url(type, 'repos', 'create')
-      end
-
-      def api_pullrequest_url(id, type)
-        api_url(type, 'pulls', "#{owner}/#{name}/#{id}")
-      end
-
-      def api_create_pullrequest_url(type)
-        api_url(type, 'pulls', "#{owner}/#{name}")
       end
     end
 
@@ -316,7 +314,7 @@ module Hub
 
       def remote_name
         name =~ %r{^refs/remotes/([^/]+)} and $1 or
-          raise "can't get remote name from #{name.inspect}"
+          raise Error, "can't get remote name from #{name.inspect}"
       end
     end
 
@@ -339,13 +337,20 @@ module Hub
       def urls
         @urls ||= local_repo.git_config("remote.#{name}.url", :all).to_s.split("\n").map { |uri|
           begin
-            if uri =~ %r{^[\w-]+://}    then URI(uri)
-            elsif uri =~ %r{^([^/]+?):} then URI("ssh://#{$1}/#{$'}")  # scp-like syntax
+            if uri =~ %r{^[\w-]+://}    then uri_parse(uri)
+            elsif uri =~ %r{^([^/]+?):} then uri_parse("ssh://#{$1}/#{$'}")  # scp-like syntax
             end
           rescue URI::InvalidURIError
             nil
           end
         }.compact
+      end
+
+      def uri_parse uri
+        uri = URI.parse uri
+        uri.host = local_repo.ssh_config.get_value(uri.host, 'hostname') { uri.host }
+        uri.user = local_repo.ssh_config.get_value(uri.host, 'user') { uri.user }
+        uri
       end
     end
 
@@ -367,7 +372,7 @@ module Hub
         project.name = name
         project
       else
-        GithubProject.new(local_repo, owner, name)
+        GithubProject.new(local_repo(false), owner, name)
       end
     end
 
@@ -378,44 +383,6 @@ module Hub
 
     def resolve_github_url(url)
       GithubURL.resolve(url, local_repo) if url =~ /^https?:/
-    end
-
-    LGHCONF = "http://help.github.com/set-your-user-name-email-and-github-token/"
-
-    # Either returns the GitHub user as set by git-config(1) or aborts
-    # with an error message.
-    def github_user(fatal = true, host = nil)
-      if local = local_repo(false)
-        host ||= local.default_host
-        host = nil if host == local.main_host
-      end
-      host = %(."#{host}") if host
-      if user = ENV['GITHUB_USER'] || git_config("github#{host}.user")
-        user
-      elsif fatal
-        if host.nil?
-          abort("** No GitHub user set. See #{LGHCONF}")
-        else
-          abort("** No user set for github#{host}")
-        end
-      end
-    end
-
-    def github_token(fatal = true, host = nil)
-      if local = local_repo(false)
-        host ||= local.default_host
-        host = nil if host == local.main_host
-      end
-      host = %(."#{host}") if host
-      if token = ENV['GITHUB_TOKEN'] || git_config("github#{host}.token")
-        token
-      elsif fatal
-        if host.nil?
-          abort("** No GitHub token set. See #{LGHCONF}")
-        else
-          abort("** No token set for github#{host}")
-        end
-      end
     end
 
     # legacy setting
@@ -457,50 +424,55 @@ module Hub
       editor.shellsplit
     end
 
-    # Cross-platform web browser command; respects the value set in $BROWSER.
-    # 
-    # Returns an array, e.g.: ['open']
-    def browser_launcher
-      browser = ENV['BROWSER'] || (
-        osx? ? 'open' : windows? ? 'start' :
-        %w[xdg-open cygstart x-www-browser firefox opera mozilla netscape].find { |comm| which comm }
-      )
+    module System
+      # Cross-platform web browser command; respects the value set in $BROWSER.
+      # 
+      # Returns an array, e.g.: ['open']
+      def browser_launcher
+        browser = ENV['BROWSER'] || (
+          osx? ? 'open' : windows? ? 'start' :
+          %w[xdg-open cygstart x-www-browser firefox opera mozilla netscape].find { |comm| which comm }
+        )
 
-      abort "Please set $BROWSER to a web launcher to use this command." unless browser
-      Array(browser)
-    end
-
-    def osx?
-      require 'rbconfig'
-      RbConfig::CONFIG['host_os'].to_s.include?('darwin')
-    end
-
-    def windows?
-      require 'rbconfig'
-      RbConfig::CONFIG['host_os'] =~ /msdos|mswin|djgpp|mingw|windows/
-    end
-
-    # Cross-platform way of finding an executable in the $PATH.
-    #
-    #   which('ruby') #=> /usr/bin/ruby
-    def which(cmd)
-      exts = ENV['PATHEXT'] ? ENV['PATHEXT'].split(';') : ['']
-      ENV['PATH'].split(File::PATH_SEPARATOR).each do |path|
-        exts.each { |ext|
-          exe = "#{path}/#{cmd}#{ext}"
-          return exe if File.executable? exe
-        }
+        abort "Please set $BROWSER to a web launcher to use this command." unless browser
+        Array(browser)
       end
-      return nil
+
+      def osx?
+        require 'rbconfig'
+        RbConfig::CONFIG['host_os'].to_s.include?('darwin')
+      end
+
+      def windows?
+        require 'rbconfig'
+        RbConfig::CONFIG['host_os'] =~ /msdos|mswin|djgpp|mingw|windows/
+      end
+
+      # Cross-platform way of finding an executable in the $PATH.
+      #
+      #   which('ruby') #=> /usr/bin/ruby
+      def which(cmd)
+        exts = ENV['PATHEXT'] ? ENV['PATHEXT'].split(';') : ['']
+        ENV['PATH'].split(File::PATH_SEPARATOR).each do |path|
+          exts.each { |ext|
+            exe = "#{path}/#{cmd}#{ext}"
+            return exe if File.executable? exe
+          }
+        end
+        return nil
+      end
+
+      # Checks whether a command exists on this system in the $PATH.
+      #
+      # name - The String name of the command to check for.
+      #
+      # Returns a Boolean.
+      def command?(name)
+        !which(name).nil?
+      end
     end
 
-    # Checks whether a command exists on this system in the $PATH.
-    #
-    # name - The String name of the command to check for.
-    #
-    # Returns a Boolean.
-    def command?(name)
-      !which(name).nil?
-    end
+    include System
+    extend System
   end
 end

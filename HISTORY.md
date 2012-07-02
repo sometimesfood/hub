@@ -1,3 +1,24 @@
+## master
+
+* fix GitHub username prompt in `create` command
+* make `fetch` command work with private repos too
+* add `merge` command to merge pull requests
+
+## 1.9.0 (2012-05-04)
+
+* internal refactoring and code reorganization
+* switch to GitHub API v3 and authenticate via OAuth
+* auth info is now stored in ~/.config/hub instead of ~/.gitconfig
+
+## 1.8.4 (2012-03-20)
+
+* add bash, zsh completion
+* improve `hub alias` command
+* change `git fork` so it fails when repo already exists under user
+* teach custom commands to respect `-h` & `--help` flags
+* `pull-request`: better error message for invalid remotes/URLs
+* respect local SSH aliases for host names
+
 ## 1.8.3 (2012-03-02)
 
 * fix `pull-request` from branch tracking another local branch

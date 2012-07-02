@@ -1,4 +1,6 @@
 *.swp
 *~
 /hub
+Gemfile.lock
+tmp/
 .pc/

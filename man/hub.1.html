@@ -77,7 +77,7 @@
 <h2 id="SYNOPSIS">SYNOPSIS</h2>
 
 <p><code>hub</code> [<code>--noop</code>] <var>COMMAND</var> <var>OPTIONS</var><br />
-<code>hub alias</code> [<code>-s</code>] <var>SHELL</var></p>
+<code>hub alias</code> [<code>-s</code>] [<var>SHELL</var>]</p>
 
 <h3 id="Expanded-git-commands-">Expanded git commands:</h3>
 
@@ -87,6 +87,7 @@
 <code>git remote set-url</code> [<code>-p</code>] <var>OPTIONS</var> <var>REMOTE-NAME</var> <var>USER</var>[/<var>REPOSITORY</var>]<br />
 <code>git fetch</code> <var>USER-1</var>,[<var>USER-2</var>,...]<br />
 <code>git checkout</code> <var>PULLREQ-URL</var> [<var>BRANCH</var>]<br />
+<code>git merge</code> <var>PULLREQ-URL</var><br />
 <code>git cherry-pick</code> <var>GITHUB-REF</var><br />
 <code>git am</code> <var>GITHUB-URL</var><br />
 <code>git apply</code> <var>GITHUB-URL</var><br />
@@ -99,7 +100,7 @@
 <code>git browse</code> [<code>-u</code>] [[<var>USER</var><code>/</code>]<var>REPOSITORY</var>] [SUBPAGE]<br />
 <code>git compare</code> [<code>-u</code>] [<var>USER</var>] [<var>START</var>...]<var>END</var><br />
 <code>git fork</code> [<code>--no-remote</code>]<br />
-<code>git pull-request</code> [<code>-f</code>] [<var>TITLE</var>|<code>-i</code> <var>ISSUE</var>] [<code>-b</code> <var>BASE</var>] [<code>-h</code> <var>HEAD</var>]:</p>
+<code>git pull-request</code> [<code>-f</code>] [<var>TITLE</var>|<code>-i</code> <var>ISSUE</var>] [<code>-b</code> <var>BASE</var>] [<code>-h</code> <var>HEAD</var>]</p>
 
 <h2 id="DESCRIPTION">DESCRIPTION</h2>
 
@@ -108,10 +109,9 @@
 <dl>
 <dt><code>hub --noop</code> <var>COMMAND</var></dt><dd><p>Shows which command(s) would be run as a result of the current command.
 Doesn't perform anything.</p></dd>
-<dt><code>hub alias</code> [<code>-s</code>] <var>SHELL</var></dt><dd><p>Writes shell aliasing code for <var>SHELL</var> (<code>bash</code>, <code>sh</code>, <code>zsh</code>,
-<code>csh</code>) to standard output. With the <code>-s</code> option, the output of
-this command can be evaluated directly within the shell:<br />
-<code>eval $(hub alias -s bash)</code></p></dd>
+<dt><code>hub alias</code> [<code>-s</code>] [<var>SHELL</var>]</dt><dd><p>Shows shell instructions for wrapping git. If given, <var>SHELL</var> specifies the
+type of shell; otherwise defaults to the value of SHELL environment
+variable.  With <code>-s</code>, outputs shell script suitable for <code>eval</code>.</p></dd>
 <dt><code>git init</code> <code>-g</code> <var>OPTIONS</var></dt><dd><p>Create a git repository as with <span class="man-ref">git-init<span class="s">(1)</span></span> and add remote <code>origin</code> at
 "git@github.com:<var>USER</var>/<var>REPOSITORY</var>.git"; <var>USER</var> is your GitHub username and
 <var>REPOSITORY</var> is the current working directory's basename.</p></dd>
@@ -132,6 +132,8 @@ remotes are only added if they correspond to valid forks on GitHub.</p></dd>
 reviewing, rebasing and otherwise cleaning up the commits in the pull
 request before merging. The name of the local branch can explicitly be
 set with <var>BRANCH</var>.</p></dd>
+<dt><code>git merge</code> <var>PULLREQ-URL</var></dt><dd><p>Merge the pull request with a commit message that includes the pull request
+ID and title, similar to the GitHub Merge Button.</p></dd>
 <dt><code>git cherry-pick</code> <var>GITHUB-REF</var></dt><dd><p>Cherry-pick a commit from a fork using either full URL to the commit
 or GitHub-flavored Markdown notation, which is <code>user@sha</code>. If the remote
 doesn't yet exist, it will be added. A <code>git fetch &lt;user></code> is issued
@@ -174,8 +176,7 @@ the range of history to compare. If a range with two dots (<code>a..b</code>) is
 it will be transformed into one with three dots. If <var>START</var> is omitted,
 GitHub will compare against the base branch (the default is "master").</p></dd>
 <dt><code>git fork</code> [<code>--no-remote</code>]</dt><dd><p>Forks the original project (referenced by "origin" remote) on GitHub and
-adds a new remote for it under your username. Requires <code>github.token</code> to
-be set (see CONFIGURATION).</p></dd>
+adds a new remote for it under your username.</p></dd>
 <dt><code>git pull-request</code> [<code>-f</code>] [<var>TITLE</var>|<code>-i</code> <var>ISSUE</var>|<var>ISSUE-URL</var>] [<code>-b</code> <var>BASE</var>] [<code>-h</code> <var>HEAD</var>]</dt><dd><p>Opens a pull request on GitHub for the project that the "origin" remote
 points to. The default head of the pull request is the current branch.
 Both base and head of the pull request can be explicitly given in one of
@@ -195,22 +196,8 @@ of title you can paste a full URL to an issue on GitHub.</p></dd>
 
 <h2 id="CONFIGURATION">CONFIGURATION</h2>
 
-<p>Use <span class="man-ref">git-config<span class="s">(1)</span></span> to display the currently configured GitHub username:</p>
-
-<pre><code>$ git config --global github.user
-</code></pre>
-
-<p>Or, set the GitHub username and token with:</p>
-
-<pre><code>$ git config --global github.user &lt;username>
-$ git config --global github.token &lt;token>
-</code></pre>
-
-<p>You can override these values with <var>GITHUB_USER</var> and <var>GITHUB_TOKEN</var>
-environment variables.</p>
-
-<p>See <a href="http://help.github.com/set-your-user-name-email-and-github-token/" data-bare-link="true">http://help.github.com/set-your-user-name-email-and-github-token/</a> for more
-information.</p>
+<p>Hub will prompt for GitHub username &amp; password the first time it needs to access
+the API and exchange it for an OAuth token, which it saves in "~/.config/hub".</p>
 
 <p>If you prefer the HTTPS protocol for GitHub repositories, you can set
 "hub.protocol" to "https". This will affect <code>clone</code>, <code>fork</code>, <code>remote add</code>
@@ -227,12 +214,6 @@ point to github.com. GitHub Enterprise hosts need to be whitelisted to
 configure hub to treat such remotes same as github.com:</p>
 
 <pre><code>$ git config --global --add hub.host my.git.org
-</code></pre>
-
-<p>API username and token need also be configured for each Enterprise host:</p>
-
-<pre><code>$ git config --global github."my.git.org".user &lt;username>
-$ git config --global github."my.git.org".token &lt;token>
 </code></pre>
 
 <p>The default host for commands like <code>init</code> and <code>clone</code> is still
@@ -333,11 +314,18 @@ $ git pull-request -i 123
 
 <h3 id="git-checkout">git checkout</h3>
 
-<pre><code># $ git checkout https://github.com/defunkt/hub/pull/73
-# &gt; git remote add -f -t feature git://github:com/mislav/hub.git
-# &gt; git checkout --track -B mislav-feature mislav/feature
+<pre><code>$ git checkout https://github.com/defunkt/hub/pull/73
+&gt; git remote add -f -t feature git://github:com/mislav/hub.git
+&gt; git checkout --track -B mislav-feature mislav/feature
 
-# $ git checkout https://github.com/defunkt/hub/pull/73 custom-branch-name
+$ git checkout https://github.com/defunkt/hub/pull/73 custom-branch-name
+</code></pre>
+
+<h3 id="git-merge">git merge</h3>
+
+<pre><code>$ git merge https://github.com/defunkt/hub/pull/73
+&gt; git fetch git://github.com/mislav/hub.git +refs/heads/feature:refs/remotes/mislav/feature
+&gt; git merge mislav/feature --no-ff -m 'Merge pull request #73 from mislav/feature...'
 </code></pre>
 
 <h3 id="git-create">git create</h3>
@@ -449,7 +437,7 @@ $ git help hub
 
   <ol class='man-decor man-foot man foot'>
     <li class='tl'>DEFUNKT</li>
-    <li class='tc'>March 2012</li>
+    <li class='tc'>May 2012</li>
     <li class='tr'>hub(1)</li>
   </ol>
 
