@@ -1,8 +1,12 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
 
-build:
+build-indep:
 	rake standalone
+
+build-arch:
+
+build: build-indep
 
 clean:
 	dh_clean hub
