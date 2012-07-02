@@ -1,3 +1,12 @@
+hub (1.10.1-1) precise; urgency=low
+
+  * New upstream release (v1.10.1)
+  * Update debian/control standards version
+  * Fix debian/copyright format
+  * Add build-indep and build-arch targets to debian/rules
+
+ -- Sebastian Boehm <sebastian@sometimesfood.org>  Mon, 02 Jul 2012 12:36:27 +0200
+
 hub (1.8.3-1) lucid; urgency=low
 
   * New upstream release (v1.8.3)
